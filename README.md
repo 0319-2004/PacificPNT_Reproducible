@@ -49,6 +49,6 @@ The raw GNSS logs in `data/raw/` were collected under the following strict condi
 
 ### Installation
 ```bash
-git clone [https://github.com/your-username/PacificPNT_Reproducible.git](https://github.com/your-username/PacificPNT_Reproducible.git)
+git clone [https://github.com/0319-2004/PacificPNT_Reproducible.git](https://github.com/0319-2004/PacificPNT_Reproducible.git)
 cd PacificPNT_Reproducible
 pip install -r requirements.txt
