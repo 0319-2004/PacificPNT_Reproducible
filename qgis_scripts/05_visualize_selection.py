@@ -1,17 +1,28 @@
-exec("""
-from qgis.core import QgsProject, QgsRasterLayer
-import processing
-import math
 import os
+import math
+import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+print("=========== RISK CLASSIFICATION START ===========")
+
+# ---- 0. パス設定 (相対パス化) ----
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# データを保存するディレクトリ (data/processed)
+BASE_DIR = os.path.join(SCRIPT_DIR, "data", "processed")
+
+# 出力先フォルダの自動生成
+if not os.path.exists(BASE_DIR):
+    os.makedirs(BASE_DIR)
+    print(f"[*] ディレクトリを作成しました: {BASE_DIR}")
 
 # ==== 入力設定 ====
-RISK_LAYER_NAME = "risk_proxy_5m"   # ここはプロジェクト上のレイヤ名に合わせる
-OUT_PATH = os.path.expanduser("~/Desktop/risk_class_5m_py.tif")
+RISK_LAYER_NAME = "risk_proxy_5m"   # プロジェクト上のレイヤ名
+OUT_PATH = os.path.join(BASE_DIR, "risk_class_5m_py.tif")
 
 proj = QgsProject.instance()
 layers = proj.mapLayersByName(RISK_LAYER_NAME)
 if not layers:
-    raise RuntimeError(f"レイヤ '{RISK_LAYER_NAME}' が見つかりません（レイヤパネルの名前と完全一致させて）")
+    raise RuntimeError(f"レイヤ '{RISK_LAYER_NAME}' が見つかりません（レイヤパネルの名前と完全一致させてください）")
 
 risk_layer = layers[0]
 risk_path = risk_layer.dataProvider().dataSourceUri().split("|")[0]
@@ -44,7 +55,7 @@ for r in range(block.height()):
 values.sort()
 n = len(values)
 if n == 0:
-    raise RuntimeError("有効ピクセルが0です（入力がNoDataのみの可能性）。AOIマスク/入力レイヤを確認。")
+    raise RuntimeError("有効ピクセルが0です（入力がNoDataのみの可能性）。AOIマスク/入力レイヤを確認してください。")
 
 def quantile(p):
     i = (n - 1) * p
@@ -68,8 +79,15 @@ print("▶ Expression:", expr)
 params = {
     "INPUT_A": risk_path,
     "BAND_A": 1,
+    "INPUT_B": None, "BAND_B": -1,
+    "INPUT_C": None, "BAND_C": -1,
+    "INPUT_D": None, "BAND_D": -1,
+    "INPUT_E": None, "BAND_E": -1,
+    "INPUT_F": None, "BAND_F": -1,
     "FORMULA": expr,
     "NO_DATA": 0,
+    "RTYPE": 5,   # Float32
+    "EXTRA": "",
     "OUTPUT": OUT_PATH
 }
 
@@ -80,7 +98,9 @@ print("[+] created:", OUT_PATH)
 out_lyr = QgsRasterLayer(OUT_PATH, "risk_class_5m_py")
 if not out_lyr.isValid():
     raise RuntimeError("出力ラスタの読み込みに失敗しました")
+
 proj.addMapLayer(out_lyr)
 print("[+] added layer: risk_class_5m_py")
-""")
+
+print("=========== RISK CLASSIFICATION DONE ===========")
 
