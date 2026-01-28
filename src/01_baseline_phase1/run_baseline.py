@@ -17,8 +17,6 @@ except ImportError:
 
 # ==========================================
 # ユーティリティ関数 (GNSS Parser)
-# ※ src/00_utils/gnss_parser.py があればそちらからimport推奨ですが、
-#    単体動作保証のためここにも実装を含めます。
 # ==========================================
 def parse_gnss_log(filepath):
     fix_lines, status_lines = [], []
@@ -89,7 +87,7 @@ def calculate_hdop_from_geometry(az, el):
 # ==========================================
 def run_baseline_analysis(
     log_dir, 
-    site_risk_file, 
+    site_def_file, 
     output_dir, 
     qc_min_epochs=240, 
     qc_min_duration=240.0,
@@ -106,11 +104,12 @@ def run_baseline_analysis(
     if os.path.exists(latest_dir):
         shutil.rmtree(latest_dir)
     os.makedirs(os.path.join(run_dir, 'plots'), exist_ok=True)
-    os.makedirs(os.path.join(latest_dir, 'plots'), exist_ok=True) # latest側も作成
+    os.makedirs(os.path.join(latest_dir, 'plots'), exist_ok=True)
 
     # 座標変換設定 (x=lon, y=lat)
     transformer = pyproj.Transformer.from_crs("epsg:4326", proj_epsg, always_xy=True)
 
+    # ログファイルの検索 (rawフォルダ直下の .txt)
     log_files = glob.glob(os.path.join(log_dir, '*.txt'))
     print(f"Found {len(log_files)} logs in {log_dir}")
     
@@ -160,7 +159,7 @@ def run_baseline_analysis(
             hdop_results[f"{cut_name}_median"] = np.median(hdops) if hdops else np.nan
 
         site_metrics.append({
-            'site_id': site_id, 'err_p50_m': err_p50, 'err_p95_m': err_p95,
+            'site_id': site_id, 'err_p95_m': err_p95, 'err_p50_m': err_p50,
             'n_fix': n_fix, 'duration': duration, 'used_sat_mean': used_sat_mean,
             'cn0_mean': df_used['Cn0DbHz'].mean(), 'cn0_std': df_used['Cn0DbHz'].std(),
             'elev_mean': df_used['ElevationDegrees'].mean(),
@@ -178,45 +177,54 @@ def run_baseline_analysis(
         return
 
     df_metrics = pd.DataFrame(site_metrics)
+    # 中間ファイル保存
     df_metrics.to_csv(os.path.join(run_dir, 'site_metrics_raw.csv'), index=False)
     
-    # Merge with Site Risk (External Data)
-    if not os.path.exists(site_risk_file):
-        print(f"Warning: {site_risk_file} not found. Skipped merge and plot.")
+    # --- Merge with Site Definitions (Corrected) ---
+    if not os.path.exists(site_def_file):
+        print(f"Warning: {site_def_file} not found. Skipping merge.")
+        # ファイルがない場合は解析結果のみを出力
+        output_csv_name = 'final_dataset.csv'
+        df_metrics.to_csv(os.path.join(run_dir, output_csv_name), index=False)
         return
         
-    df_risk = pd.read_csv(site_risk_file)
+    df_risk = pd.read_csv(site_def_file)
     df_risk['site_id'] = df_risk['site_id'].astype(str).str.strip()
-    df_merged = pd.merge(df_metrics, df_risk, on='site_id', how='inner')
-    print(f"Merged: {len(df_merged)} sites")
     
-    # 【修正】出力ファイル名を統一ルール 'final_dataset.csv' に変更
+    # 内部結合 (サイト定義にある場所のみ残す)
+    df_merged = pd.merge(df_metrics, df_risk, on='site_id', how='inner')
+    print(f"Merged with definitions: {len(df_merged)} sites")
+    
+    # 出力ファイル名は統一ルール 'final_dataset.csv'
     output_csv_name = 'final_dataset.csv'
     df_merged.to_csv(os.path.join(run_dir, output_csv_name), index=False)
     
-    # High Error Classification & ROC
-    thr = df_merged['err_p95_m'].quantile(high_error_quantile)
-    df_merged['high_error'] = (df_merged['err_p95_m'] >= thr).astype(int)
-    print(f"High Error Threshold (top {100*(1-high_error_quantile):.0f}%): {thr:.2f}m")
+    # --- Analysis & Plotting ---
+    if 'err_p95_m' in df_merged.columns:
+        thr = df_merged['err_p95_m'].quantile(high_error_quantile)
+        df_merged['high_error'] = (df_merged['err_p95_m'] >= thr).astype(int)
+        print(f"High Error Threshold (top {100*(1-high_error_quantile):.0f}%): {thr:.2f}m")
     
-    features = [f for f in ['risk_proxy_5m', 'svf_proxy_5m', 'risk_cut5', 'hdop_cut_a_median', 'hdop_cut_b_median'] if f in df_merged.columns]
+    # プロット用の特徴量 (定義ファイルに含まれている場合のみ使用)
+    possible_features = ['risk_proxy_5m', 'svf_proxy_5m', 'risk_cut5', 'hdop_cut_a_median', 'hdop_cut_b_median']
+    features = [f for f in possible_features if f in df_merged.columns]
     
-    auc_results = []
-    plt.figure(figsize=(8, 8))
-    for f in features:
-        tmp = df_merged[[f, 'high_error']].dropna()
-        if len(tmp['high_error'].unique()) < 2: continue
-        fpr, tpr, _ = roc_curve(tmp['high_error'], tmp[f])
-        score = auc(fpr, tpr)
-        plt.plot(fpr, tpr, label=f'{f} (AUC={score:.2f})')
-        auc_results.append(f"{f}: {score:.3f}")
-        
-    plt.plot([0,1],[0,1],'k--'); plt.legend(); plt.title('ROC Curves')
-    plt.savefig(os.path.join(run_dir, 'plots', 'roc_curves.png'))
-    with open(os.path.join(run_dir, 'roc_auc.txt'), 'w') as f: f.write('\n'.join(auc_results))
-    
-    # Scatter Plots
     if features:
+        auc_results = []
+        plt.figure(figsize=(8, 8))
+        for f in features:
+            tmp = df_merged[[f, 'high_error']].dropna()
+            if len(tmp['high_error'].unique()) < 2: continue
+            fpr, tpr, _ = roc_curve(tmp['high_error'], tmp[f])
+            score = auc(fpr, tpr)
+            plt.plot(fpr, tpr, label=f'{f} (AUC={score:.2f})')
+            auc_results.append(f"{f}: {score:.3f}")
+            
+        plt.plot([0,1],[0,1],'k--'); plt.legend(); plt.title('ROC Curves')
+        plt.savefig(os.path.join(run_dir, 'plots', 'roc_curves.png'))
+        with open(os.path.join(run_dir, 'roc_auc.txt'), 'w') as f: f.write('\n'.join(auc_results))
+        
+        # Scatter Plots
         plt.figure(figsize=(15, 5))
         for i, f in enumerate(features[:3]):
             plt.subplot(1, 3, i+1)
@@ -224,13 +232,14 @@ def run_baseline_analysis(
             plt.xlabel(f); plt.ylabel('Error p95 (m)')
         plt.tight_layout()
         plt.savefig(os.path.join(run_dir, 'plots', 'scatter_risk_err.png'))
+    else:
+        print("[Info] Risk proxy columns not found in site definitions. Skipping plots.")
 
     # Copy results to 'latest'
     for f in glob.glob(os.path.join(run_dir, '*')):
         if os.path.isfile(f):
             shutil.copy(f, latest_dir)
             
-    # shutil.copytree for plots needs destination to NOT exist, so we handle files inside
     for plot_file in glob.glob(os.path.join(run_dir, 'plots', '*')):
         shutil.copy(plot_file, os.path.join(latest_dir, 'plots'))
 
@@ -238,25 +247,22 @@ def run_baseline_analysis(
 
 
 if __name__ == "__main__":
-    # ファイル配置場所: src/01_baseline_phase1/ (Rootから2階層深い)
+    # ファイル配置場所: src/01_baseline_phase1/
     base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # パス設定
-    # ログ入力: ../../data/processed/gnss_normalized (前工程で整形されたログを想定)
-    # ※もし生ログを使うなら ../../data/raw/gnss_logs などに変更してください
-    log_input_dir = os.path.join(base_dir, "..", "..", "data", "processed", "gnss_normalized")
+    # 【修正1】ログ入力パス: ../../data/raw/gnss_logs (ファイル構成に合わせる)
+    log_input_dir = os.path.join(base_dir, "..", "..", "data", "raw", "gnss_logs")
     
-    # リスク定義ファイル: ../../data/processed/sites_risk.csv (QGIS等で作成されたファイル)
-    # ※ site_definitions.csv (raw) ではなく、中間リスクファイルを使うため維持
-    site_risk_csv = os.path.join(base_dir, "..", "..", "data", "processed", "sites_risk.csv")
+    # 【修正2】サイト定義パス: ../../data/raw/site_definitions.csv (ファイル名統一)
+    site_def_csv = os.path.join(base_dir, "..", "..", "data", "raw", "site_definitions.csv")
     
-    # 出力先: ../../output/baseline_analysis
+    # 出力先
     output_base_dir = os.path.join(base_dir, "..", "..", "output", "baseline_analysis")
     
     # 実行
     run_baseline_analysis(
         log_dir=log_input_dir,
-        site_risk_file=site_risk_csv,
+        site_def_file=site_def_csv,
         output_dir=output_base_dir,
         qc_min_epochs=240,
         qc_min_duration=240.0,
