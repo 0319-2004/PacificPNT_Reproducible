@@ -189,7 +189,10 @@ def run_baseline_analysis(
     df_risk['site_id'] = df_risk['site_id'].astype(str).str.strip()
     df_merged = pd.merge(df_metrics, df_risk, on='site_id', how='inner')
     print(f"Merged: {len(df_merged)} sites")
-    df_merged.to_csv(os.path.join(run_dir, 'merged.csv'), index=False)
+    
+    # 【修正】出力ファイル名を統一ルール 'final_dataset.csv' に変更
+    output_csv_name = 'final_dataset.csv'
+    df_merged.to_csv(os.path.join(run_dir, output_csv_name), index=False)
     
     # High Error Classification & ROC
     thr = df_merged['err_p95_m'].quantile(high_error_quantile)
@@ -244,6 +247,7 @@ if __name__ == "__main__":
     log_input_dir = os.path.join(base_dir, "..", "..", "data", "processed", "gnss_normalized")
     
     # リスク定義ファイル: ../../data/processed/sites_risk.csv (QGIS等で作成されたファイル)
+    # ※ site_definitions.csv (raw) ではなく、中間リスクファイルを使うため維持
     site_risk_csv = os.path.join(base_dir, "..", "..", "data", "processed", "sites_risk.csv")
     
     # 出力先: ../../output/baseline_analysis
