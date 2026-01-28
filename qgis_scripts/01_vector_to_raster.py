@@ -1,13 +1,22 @@
-exec(r"""
 import os
 import math
 import processing
-from qgis.core import QgsProject, QgsVectorLayer
+from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer
 
 print("=========== BUILDING RASTERIZATION (3m / 5m) START ===========")
 
+# ---- 0. パス設定 (相対パス化) ----
+# スクリプトの場所を基準にプロジェクトルートを取得
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# データを保存するディレクトリ (data/processed)
+BASE_DIR = os.path.join(SCRIPT_DIR, "data", "processed")
 
-# ---- 0. 入力レイヤを取得 ----
+# 出力先フォルダの自動生成
+if not os.path.exists(BASE_DIR):
+    os.makedirs(BASE_DIR)
+    print(f"[*] ディレクトリを作成しました: {BASE_DIR}")
+
+# ---- 1. 入力レイヤを取得 ----
 proj = QgsProject.instance()
 
 # EPSG:6668 の元建物ポリゴン
@@ -27,14 +36,10 @@ aoi     = aoi_list[0]
 
 print(f"▶ 元建物レイヤ: {BLD_SRC_NAME}  ({bld_src.crs().authid()})")
 print(f"▶ AOIレイヤ    : {AOI_NAME}  ({aoi.crs().authid()})")
-
-# AOI と同じフォルダに出力する
-aoi_path = aoi.dataProvider().dataSourceUri().split("|")[0]
-BASE_DIR = os.path.dirname(aoi_path) if aoi_path else os.path.expanduser("~/Desktop")
 print(f"▶ 出力フォルダ : {BASE_DIR}")
 
 
-# ---- 1. 建物を EPSG:6677 に再投影 ----
+# ---- 2. 建物を EPSG:6677 に再投影 ----
 bld_6677_path = os.path.join(BASE_DIR, "bld_6677.gpkg")
 print("\n[*] 建物レイヤを EPSG:6677 に再投影します...")
 params_reproj = {
@@ -51,7 +56,7 @@ bld_6677 = QgsVectorLayer(bld_6677_path, "bld_6677", "ogr")
 proj.addMapLayer(bld_6677)
 
 
-# ---- 2. AOI 内にクリップ ----
+# ---- 3. AOI 内にクリップ ----
 bld_clip_path = os.path.join(BASE_DIR, "bld_clip.gpkg")
 print("\n[*] AOI で建物をクリップします...")
 params_clip = {
@@ -66,7 +71,7 @@ bld_clip = QgsVectorLayer(bld_clip_path, "bld_clip", "ogr")
 proj.addMapLayer(bld_clip)
 
 
-# ---- 3. AOI からラスタの行列数を決定 ----
+# ---- 4. AOI からラスタの行列数を決定 ----
 extent = aoi.extent()
 width_m  = extent.width()
 height_m = extent.height()
@@ -85,7 +90,7 @@ print(f"▶ 5m解像度: {cols5} 列 × {rows5} 行")
 extent_str = f"{extent.xMinimum()},{extent.xMaximum()},{extent.yMinimum()},{extent.yMaximum()} [EPSG:6677]"
 
 
-# ---- 4. gdal:rasterize で 3m と 5m の高さラスタを作成 ----
+# ---- 5. gdal:rasterize で 3m と 5m の高さラスタを作成 ----
 def rasterize_height(out_path, cols, rows, pixel_size, name):
     print(f"\n[*] {pixel_size:.1f}m ラスタ {name} を作成中...")
     params = {
@@ -98,7 +103,7 @@ def rasterize_height(out_path, cols, rows, pixel_size, name):
         "EXTENT": extent_str,
         "NODATA": 0,
         "OPTIONS": "",
-        "DATA_TYPE": 5,             # Float32
+        "DATA_TYPE": 5,              # Float32
         "INIT": 0,
         "INVERT": False,
         "OUTPUT": out_path
@@ -120,5 +125,4 @@ for p, n in [(bld_3m_path, "bld_height_3m"), (bld_5m_path, "bld_height_5m")]:
     else:
         print(f"⚠ ラスタの読み込みに失敗: {p}")
 
-print("\n=========== BUILDING RASTERIZATION DONE ==========="")
-)
+print("\n=========== BUILDING RASTERIZATION DONE ===========")
