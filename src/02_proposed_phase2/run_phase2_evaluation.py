@@ -71,13 +71,17 @@ def calculate_safety_metrics(df, y_col, score_col, model_name, focus_sites=FOCUS
 # ==========================================
 # メイン処理関数
 # ==========================================
-def run_phase2_evaluation(risk_csv_path, baseline_metrics_path, dop_csv_path, output_dir):
+def run_phase2_evaluation(risk_csv_path, baseline_metrics_path, dop_csv_path, output_dir, final_dataset_path):
     print("--- Phase 2: Analysis Pipeline (Safety Metrics) ---")
     
     # 出力ディレクトリ作成
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
-        print(f"[*] ディレクトリを作成しました: {output_dir}")
+    
+    # final_dataset.csv の保存先ディレクトリ作成
+    final_data_dir = os.path.dirname(final_dataset_path)
+    if not os.path.exists(final_data_dir):
+        os.makedirs(final_data_dir, exist_ok=True)
 
     # 1. ファイル読み込み
     # Phase 2 Risk (今回計算した指標)
@@ -114,10 +118,9 @@ def run_phase2_evaluation(risk_csv_path, baseline_metrics_path, dop_csv_path, ou
     
     print(f"Merged Data: {len(df_merged)} sites")
     
-    # 結合データを保存
-    merged_out_path = os.path.join(output_dir, 'merged_analysis2_final.csv')
-    df_merged.to_csv(merged_out_path, index=False)
-    print(f"Saved merged data to: {merged_out_path}")
+    # 【修正】最終データセットを data/processed/final_dataset.csv として保存
+    df_merged.to_csv(final_dataset_path, index=False)
+    print(f"Saved final dataset to: {final_dataset_path}")
 
     # 3. 評価実行 (High Error Ground Truthの定義)
     thr = df_merged['err_p95_m'].quantile(HIGH_ERROR_QUANTILE)
@@ -149,10 +152,9 @@ def run_phase2_evaluation(risk_csv_path, baseline_metrics_path, dop_csv_path, ou
 
     res_df = pd.DataFrame(results)
     
-    # コンソール表示 (Markdown表形式が見やすいが、依存関係回避のため to_string 推奨)
+    # コンソール表示
     print("\n=== Final Results for Paper ===")
     try:
-        # pandasのバージョンによっては to_markdown が要 tabulate
         print(res_df.to_string(index=False))
     except:
         print(res_df)
@@ -169,14 +171,14 @@ if __name__ == "__main__":
     # ファイル配置場所: src/02_proposed_phase2/ (Rootから2階層深い)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # 入力パス設定: ../../output 配下の各工程の結果を参照
+    # パス設定: ../../output 配下の各工程の結果を参照
     
     # 1. Phase 2 Risk Result (calc_phase2_risk.py の出力)
     input_risk_csv = os.path.join(base_dir, "..", "..", "output", "phase2_risk", "sites_risk.csv")
     
-    # 2. Phase 1 Baseline Metrics (run_baseline.py の出力: merged.csv)
-    # ※ latestフォルダを参照する
-    input_baseline_csv = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "latest", "merged.csv")
+    # 2. Phase 1 Baseline Metrics (run_baseline.py の出力: merged.csv -> final_dataset.csv)
+    # ※ ルールに基づき、前工程の出力名も final_dataset.csv に変更されている前提で読み込む
+    input_baseline_csv = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "latest", "final_dataset.csv")
     
     # 3. DOP Benchmark (week3_dop_sim.py の出力)
     input_dop_csv = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "week3_dop_results.csv")
@@ -184,13 +186,17 @@ if __name__ == "__main__":
     # 出力先: ../../output/phase2_evaluation
     output_eval_dir = os.path.join(base_dir, "..", "..", "output", "phase2_evaluation")
     
+    # 【重要】最終データセット保存先: data/processed/final_dataset.csv
+    final_dataset_dest = os.path.join(base_dir, "..", "..", "data", "processed", "final_dataset.csv")
+    
     # 実行
     try:
         run_phase2_evaluation(
             risk_csv_path=input_risk_csv,
             baseline_metrics_path=input_baseline_csv,
             dop_csv_path=input_dop_csv,
-            output_dir=output_eval_dir
+            output_dir=output_eval_dir,
+            final_dataset_path=final_dataset_dest
         )
     except Exception as e:
         print(f"Error during evaluation: {e}")
