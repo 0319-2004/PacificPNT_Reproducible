@@ -3,7 +3,31 @@ import math
 import processing
 from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer
 
-def run_rasterization(output_dir, bld_src_name="bld_2d", aoi_name="aoi"):
+def get_or_load_layer(layer_name, file_path):
+    """
+    QGIS上に指定した名前のレイヤがあればそれを返す。
+    なければ file_path からロードしてプロジェクトに追加する。
+    """
+    proj = QgsProject.instance()
+    layers = proj.mapLayersByName(layer_name)
+    
+    if layers:
+        print(f"✔ 既存レイヤを使用: {layer_name}")
+        return layers[0]
+    
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"❌ ファイルが見つかりません: {file_path}")
+    
+    print(f"📂 ファイルからロード中: {os.path.basename(file_path)}")
+    layer = QgsVectorLayer(file_path, layer_name, "ogr")
+    
+    if not layer.isValid():
+        raise RuntimeError(f"❌ レイヤのロードに失敗: {file_path}")
+    
+    proj.addMapLayer(layer)
+    return layer
+
+def run_rasterization(output_dir, bld_path, aoi_path):
     """
     建物のベクトルデータを再投影・クリップし、指定された解像度でラスタライズする。
     """
@@ -11,24 +35,31 @@ def run_rasterization(output_dir, bld_src_name="bld_2d", aoi_name="aoi"):
     
     # 出力先フォルダの自動生成
     os.makedirs(output_dir, exist_ok=True)
-    
     proj = QgsProject.instance()
 
-    # ---- 1. 入力レイヤを取得 ----
-    bld_src_list = proj.mapLayersByName(bld_src_name)
-    aoi_list = proj.mapLayersByName(aoi_name)
+    # ---- 1. 入力レイヤを取得 (自動ロード対応) ----
+    # AOI (EPSG:4326)
+    aoi_origin = get_or_load_layer("aoi", aoi_path)
+    # 建物 (EPSG:6677 or others)
+    bld_src = get_or_load_layer("bld_2d", bld_path)
 
-    if not bld_src_list:
-        raise RuntimeError(f"建物レイヤ '{bld_src_name}' が見つかりません")
-    if not aoi_list:
-        raise RuntimeError(f"AOIレイヤ '{aoi_name}' が見つかりません")
-
-    bld_src = bld_src_list[0]
-    aoi = aoi_list[0]
-
-    print(f"▶ 元建物レイヤ: {bld_src_name} ({bld_src.crs().authid()})")
-    print(f"▶ AOIレイヤ    : {aoi_name} ({aoi.crs().authid()})")
+    print(f"▶ 元建物レイヤ: {bld_src.name()} ({bld_src.crs().authid()})")
+    print(f"▶ 元AOIレイヤ : {aoi_origin.name()} ({aoi_origin.crs().authid()})")
     print(f"▶ 出力フォルダ : {output_dir}")
+
+    # ---- [重要修正] AOI読み込み直後に EPSG:6677 へ変換する処理 ----
+    print("\n[*] AOIレイヤを EPSG:6677 に再投影します...")
+    params_aoi_reproj = {
+        "INPUT": aoi_origin,
+        "TARGET_CRS": "EPSG:6677",
+        "OUTPUT": "TEMPORARY_OUTPUT"
+    }
+    # メモリレイヤとして作成
+    result_aoi = processing.run("native:reprojectlayer", params_aoi_reproj)
+    aoi_6677 = result_aoi['OUTPUT']
+
+    # ★ここがポイント！変数を差し替えて、これ以降はメートル単位のAOIを使う
+    aoi = aoi_6677
 
     # ---- 2. 建物を EPSG:6677 に再投影 ----
     bld_6677_path = os.path.join(output_dir, "bld_6677.gpkg")
@@ -49,7 +80,7 @@ def run_rasterization(output_dir, bld_src_name="bld_2d", aoi_name="aoi"):
     print("\n[*] AOI で建物をクリップします...")
     params_clip = {
         "INPUT": bld_6677,
-        "OVERLAY": aoi,
+        "OVERLAY": aoi, # 変換後のAOIを使用
         "OUTPUT": bld_clip_path
     }
     processing.run("native:clip", params_clip)
@@ -58,7 +89,7 @@ def run_rasterization(output_dir, bld_src_name="bld_2d", aoi_name="aoi"):
     proj.addMapLayer(bld_clip)
 
     # ---- 4. AOI からラスタの行列数を決定 ----
-    extent = aoi.extent()
+    extent = aoi.extent() # 変換後のAOIの範囲を使用
     width_m = extent.width()
     height_m = extent.height()
     
@@ -69,6 +100,7 @@ def run_rasterization(output_dir, bld_src_name="bld_2d", aoi_name="aoi"):
 
     cols3, rows3 = compute_raster_shape(3.0)
     cols5, rows5 = compute_raster_shape(5.0)
+    # extent_str も EPSG:6677 の値になる
     extent_str = f"{extent.xMinimum()},{extent.xMaximum()},{extent.yMinimum()},{extent.yMaximum()} [EPSG:6677]"
 
     # ---- 5. gdal:rasterize 実行関数 ----
@@ -110,13 +142,19 @@ def run_rasterization(output_dir, bld_src_name="bld_2d", aoi_name="aoi"):
 
 if __name__ == "__main__":
     # ファイル配置場所: qgis_scripts/ (Rootから1階層深い)
-    # ルールに基づき ../data/processed を構築
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # パス設定
     processed_data_dir = os.path.join(base_dir, "..", "data", "processed")
+    raw_data_dir = os.path.join(base_dir, "..", "data", "raw")
+    
+    # 自動ロードするファイルの場所
+    aoi_file = os.path.join(raw_data_dir, "aoi.geojson")
+    bld_file = os.path.join(raw_data_dir, "plateau_bld.gpkg") # ※3Dデータのファイル名に合わせて変更可
     
     # 処理実行
     run_rasterization(
         output_dir=processed_data_dir,
-        bld_src_name="bld_2d",
-        aoi_name="aoi"
+        bld_path=bld_file,
+        aoi_path=aoi_file
     )
