@@ -7,13 +7,7 @@ import pandas as pd
 from pathlib import Path
 
 # ==========================================
-# 設定
-# ==========================================
-LOG_DIR = "logs"                     # ログが入っているフォルダ
-OUTPUT_CSV = "week3_dop_results.csv" # 結果の保存先
-
-# ==========================================
-# 計算エンジン (DOP Simulator)
+# 計算エンジン (DOP Simulator Logic)
 # ==========================================
 def calculate_hdop(satellites):
     """
@@ -56,9 +50,11 @@ def parse_and_simulate(filepath):
     # データを格納する辞書: time -> list of (az, el)
     epochs = {}
     
-    print(f"Processing: {filepath.name} ...")
+    # pathlib.Pathオブジェクトか確認して文字列化（openで使うため）あるいはPathのままopen
+    path_obj = Path(filepath)
+    print(f"Processing: {path_obj.name} ...")
     
-    with filepath.open("r", encoding="utf-8", errors="ignore") as f:
+    with path_obj.open("r", encoding="utf-8", errors="ignore") as f:
         reader = csv.reader(f)
         header_map = {}
         
@@ -113,31 +109,54 @@ def parse_and_simulate(filepath):
         if not np.isnan(hdop_b): stats_b.append(hdop_b)
 
     return {
-        "site_id": filepath.stem.split("_")[0],
+        "site_id": path_obj.stem.split("_")[0],
         "hdop_cut_a_median": np.nanmedian(stats_a) if stats_a else np.nan,
         "hdop_cut_b_median": np.nanmedian(stats_b) if stats_b else np.nan,
         "valid_epochs": len(epochs)
     }
 
-def main():
-    log_files = glob.glob(os.path.join(LOG_DIR, "*.txt"))
+# ==========================================
+# メイン処理関数 (モジュール化)
+# ==========================================
+def run_dop_simulation(input_dir, output_csv_path):
+    print("=========== DOP SIMULATION START ===========")
     
+    # 出力先ディレクトリの自動生成
+    out_dir = os.path.dirname(output_csv_path)
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+        print(f"[*] ディレクトリを作成しました: {out_dir}")
+
+    # 入力ファイルの検索
+    log_files = glob.glob(os.path.join(input_dir, "*.txt"))
     if not log_files:
-        print("エラー: logs フォルダに .txt ファイルが見つかりません。")
+        print(f"エラー: {input_dir} に .txt ファイルが見つかりません。")
         return
+
+    print(f"Found {len(log_files)} logs in {input_dir}")
 
     results = []
     for log_file in log_files:
-        path = Path(log_file)
-        res = parse_and_simulate(path)
+        res = parse_and_simulate(log_file)
         results.append(res)
     
     df = pd.DataFrame(results)
-    df.to_csv(OUTPUT_CSV, index=False)
+    df.to_csv(output_csv_path, index=False)
     
     print("-" * 30)
-    print(f"完了！結果を {OUTPUT_CSV} に保存しました。")
-    print(df)
+    print(f"完了！結果を {output_csv_path} に保存しました。")
+    print("=========== DOP SIMULATION DONE ===========")
+
 
 if __name__ == "__main__":
-    main()
+    # ファイル配置場所: src/01_baseline_phase1/ (Rootから2階層深い)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 入力ディレクトリ: ../../data/processed/gnss_normalized (整形済みログを推奨)
+    input_log_dir = os.path.join(base_dir, "..", "..", "data", "processed", "gnss_normalized")
+    
+    # 出力ファイル: ../../output/baseline_analysis/week3_dop_results.csv
+    output_csv = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "week3_dop_results.csv")
+    
+    # 実行
+    run_dop_simulation(input_log_dir, output_csv)
