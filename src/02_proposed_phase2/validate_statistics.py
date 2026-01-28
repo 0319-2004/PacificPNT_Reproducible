@@ -135,13 +135,9 @@ if __name__ == "__main__":
     # ファイル配置場所: src/02_proposed_phase2/ (Rootから2階層深い)
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 入力: 前工程 (run_phase2_evaluation.py) で作成された結合ファイル
-    # パス: ../../output/phase2_evaluation/merged_analysis2_final.csv
-    input_csv = os.path.join(base_dir, "..", "..", "output", "phase2_evaluation", "merged_analysis2_final.csv")
+    # 入力: ../../data/processed/final_dataset.csv (統一ルールに基づく)
+    input_csv = os.path.join(base_dir, "..", "..", "data", "processed", "final_dataset.csv")
     
-    # もしユーザー指定の data/processed/final_dataset.csv があるならそちらを使う場合はパスを変更してください
-    # input_csv = os.path.join(base_dir, "..", "..", "data", "processed", "final_dataset.csv")
-
     # 出力: ../../output/phase2_proposed
     output_dir = os.path.join(base_dir, "..", "..", "output", "phase2_proposed")
 
@@ -149,4 +145,4 @@ if __name__ == "__main__":
         validate_statistics(input_csv, output_dir)
     except Exception as e:
         print(f"Error: {e}")
-        print("Ensure 'merged_analysis2_final.csv' exists (run_phase2_evaluation.py first).")
+        print("Ensure 'final_dataset.csv' exists in data/processed/.")
