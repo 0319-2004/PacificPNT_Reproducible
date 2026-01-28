@@ -23,6 +23,10 @@ def calculate_safety_metrics(df, y_col, score_col, model_name, focus_sites=FOCUS
     """
     # 必要なカラムのみ抽出して欠損除去
     cols = [y_col, score_col, 'site_id', 'err_p95_m']
+    # カラムが存在しない場合はスキップ
+    if score_col not in df.columns:
+        return None
+        
     temp = df[cols].dropna()
     
     y = temp[y_col].values
@@ -33,7 +37,10 @@ def calculate_safety_metrics(df, y_col, score_col, model_name, focus_sites=FOCUS
         return None
 
     # AUC計算
-    auc_raw = roc_auc_score(y, s)
+    try:
+        auc_raw = roc_auc_score(y, s)
+    except ValueError:
+        return None
     
     # ランキング用にスコアの向きを揃える (AUC < 0.5 ならスコアが高いほど安全という意味なので反転)
     flipped = False
@@ -53,16 +60,20 @@ def calculate_safety_metrics(df, y_col, score_col, model_name, focus_sites=FOCUS
     res = {
         "Model": model_name,
         "Score": score_col,
-        "AUC": auc_used, # 反転後 (0.5以上)
+        "AUC": round(auc_used, 3),
         "Flipped": flipped
     }
     
     # 特定サイトの順位を取得
     for site in focus_sites:
         try:
-            # 1-based index
-            rank = temp_sorted[temp_sorted['site_id'] == str(site)].index[0] + 1
-            res[f"Rank({site})"] = rank
+            # 1-based index (site_idを文字列として比較)
+            match = temp_sorted[temp_sorted['site_id'].astype(str) == str(site)]
+            if not match.empty:
+                rank = match.index[0] + 1
+                res[f"Rank({site})"] = rank
+            else:
+                res[f"Rank({site})"] = "-"
         except IndexError:
             res[f"Rank({site})"] = "-"
             
@@ -86,14 +97,14 @@ def run_phase2_evaluation(risk_csv_path, baseline_metrics_path, dop_csv_path, ou
     # 1. ファイル読み込み
     # Phase 2 Risk (今回計算した指標)
     if not os.path.exists(risk_csv_path):
-        raise FileNotFoundError(f"Risk metrics file not found: {risk_csv_path}")
+        raise FileNotFoundError(f"Risk metrics file not found: {risk_csv_path}\nPlease run calc_phase2_risk.py first.")
     df_risk = pd.read_csv(risk_csv_path)
     # サイトIDを文字列型に統一
     df_risk['site_id'] = df_risk['site_id'].astype(str)
 
     # Phase 1 Metrics (誤差正解データ: err_p95_m)
     if not os.path.exists(baseline_metrics_path):
-        raise FileNotFoundError(f"Baseline metrics file not found: {baseline_metrics_path}\nRun Phase 1 analysis first.")
+        raise FileNotFoundError(f"Baseline metrics file not found: {baseline_metrics_path}")
     df_metrics = pd.read_csv(baseline_metrics_path)
     df_metrics['site_id'] = df_metrics['site_id'].astype(str)
     
@@ -106,8 +117,9 @@ def run_phase2_evaluation(risk_csv_path, baseline_metrics_path, dop_csv_path, ou
         df_dop = pd.read_csv(dop_csv_path)
         df_dop['site_id'] = df_dop['site_id'].astype(str)
         # 必要なカラムだけ結合
-        df_metrics = pd.merge(df_metrics, df_dop[['site_id', 'hdop_cut_a_median']], on='site_id', how='left')
-        print("Merged DOP data.")
+        if 'hdop_cut_a_median' in df_dop.columns:
+            df_metrics = pd.merge(df_metrics, df_dop[['site_id', 'hdop_cut_a_median']], on='site_id', how='left')
+            print("Merged DOP data.")
     else:
         print(f"Warning: DOP file not found ({dop_csv_path}). Skipping HDOP benchmark.")
 
@@ -118,11 +130,15 @@ def run_phase2_evaluation(risk_csv_path, baseline_metrics_path, dop_csv_path, ou
     
     print(f"Merged Data: {len(df_merged)} sites")
     
-    # 【修正】最終データセットを data/processed/final_dataset.csv として保存
+    # 【重要】最終データセットを data/processed/final_dataset.csv として保存
     df_merged.to_csv(final_dataset_path, index=False)
     print(f"Saved final dataset to: {final_dataset_path}")
 
     # 3. 評価実行 (High Error Ground Truthの定義)
+    if 'err_p95_m' not in df_merged.columns:
+        print("Error: 'err_p95_m' column missing. Cannot evaluate.")
+        return
+
     thr = df_merged['err_p95_m'].quantile(HIGH_ERROR_QUANTILE)
     df_merged['high_error'] = (df_merged['err_p95_m'] >= thr).astype(int)
     
@@ -171,22 +187,41 @@ if __name__ == "__main__":
     # ファイル配置場所: src/02_proposed_phase2/ (Rootから2階層深い)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # パス設定: ../../output 配下の各工程の結果を参照
+    # =========================================================
+    # 1. 入力ファイルの「優先順位」設定 (Dual Path Logic)
+    # =========================================================
     
-    # 1. Phase 2 Risk Result (calc_phase2_risk.py の出力)
+    # Plan A: ユーザーが run_baseline.py で「今」生成したデータ (再現性確認用)
+    baseline_generated = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "latest", "final_dataset.csv")
+    
+    # Plan B: リポジトリに同梱されている「正解」データ (動作保証用)
+    baseline_provided = os.path.join(base_dir, "..", "..", "data", "processed", "final_dataset.csv")
+
+    # 自動判定ロジック
+    if os.path.exists(baseline_generated):
+        print(f"[*] Using GENERATED baseline data (Plan A): {os.path.basename(baseline_generated)}")
+        input_baseline_csv = baseline_generated
+    elif os.path.exists(baseline_provided):
+        print(f"[*] Using PROVIDED baseline data (Plan B): {os.path.basename(baseline_provided)}")
+        input_baseline_csv = baseline_provided
+    else:
+        # どちらもない場合はエラー (Phase 1を実行してください)
+        input_baseline_csv = baseline_generated # エラーメッセージ用にPlan Aのパスを設定
+
+    # =========================================================
+    # 2. その他のパス設定
+    # =========================================================
+    
+    # Risk結果: output/phase2_risk/sites_risk.csv (calc_phase2_risk.py の出力)
     input_risk_csv = os.path.join(base_dir, "..", "..", "output", "phase2_risk", "sites_risk.csv")
     
-    # 2. Phase 1 Baseline Metrics (run_baseline.py の出力: merged.csv -> final_dataset.csv)
-    # ※ ルールに基づき、前工程の出力名も final_dataset.csv に変更されている前提で読み込む
-    input_baseline_csv = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "latest", "final_dataset.csv")
-    
-    # 3. DOP Benchmark (week3_dop_sim.py の出力)
+    # DOP結果 (あれば)
     input_dop_csv = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "week3_dop_results.csv")
     
-    # 出力先: ../../output/phase2_evaluation
+    # 出力先: output/phase2_evaluation
     output_eval_dir = os.path.join(base_dir, "..", "..", "output", "phase2_evaluation")
     
-    # 【重要】最終データセット保存先: data/processed/final_dataset.csv
+    # 【重要】最終データセット保存先: data/processed/final_dataset.csv (上書き)
     final_dataset_dest = os.path.join(base_dir, "..", "..", "data", "processed", "final_dataset.csv")
     
     # 実行
