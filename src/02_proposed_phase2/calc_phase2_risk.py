@@ -108,6 +108,10 @@ def calculate_phase2_risk(
 
     # 1. 候補地データの読み込みとGeoDataFrame化
     sites_df = pd.read_csv(input_sites_csv)
+    # site_definitions.csv (raw) を使用する場合も、ここで投影座標系 (EPSG:6677) のカラムが必要
+    if 'center_x_6677' not in sites_df.columns or 'center_y_6677' not in sites_df.columns:
+         raise ValueError(f"入力CSVに座標カラム(center_x_6677, center_y_6677)が含まれていません: {input_sites_csv}")
+
     geometry = [Point(xy) for xy in zip(sites_df['center_x_6677'], sites_df['center_y_6677'])]
     sites_gdf = gpd.GeoDataFrame(sites_df, geometry=geometry, crs=CRS_METRIC)
     
@@ -161,14 +165,16 @@ if __name__ == "__main__":
     # ファイル配置場所: src/02_proposed_phase2/ (Rootから2階層深い)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # 入力パス設定: ../../data/processed (標準的なデータ置き場)
-    data_dir = os.path.join(base_dir, "..", "..", "data", "processed")
+    # パス設定
+    processed_dir = os.path.join(base_dir, "..", "..", "data", "processed")
+    raw_dir = os.path.join(base_dir, "..", "..", "data", "raw")
     
     # 入力ファイルパス
-    # ※前工程で生成されたファイル名を想定。必要に応じて変更してください。
-    in_bldg = os.path.join(data_dir, "bldg_aoi.gpkg")
-    in_brid = os.path.join(data_dir, "brid_aoi.gpkg")
-    in_sites = os.path.join(data_dir, "site_centers.csv") # 04_select_sites.py等の出力
+    in_bldg = os.path.join(processed_dir, "bldg_aoi.gpkg")
+    in_brid = os.path.join(processed_dir, "brid_aoi.gpkg")
+    
+    # サイト定義データの統一: site_centers.csv -> site_definitions.csv (raw)
+    in_sites = os.path.join(raw_dir, "site_definitions.csv")
     
     # 出力設定: ../../output/phase2_risk
     output_dir = os.path.join(base_dir, "..", "..", "output", "phase2_risk")
