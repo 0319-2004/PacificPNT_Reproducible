@@ -122,9 +122,9 @@ if __name__ == "__main__":
     # ファイル配置場所: src/03_analysis/ (Rootから2階層深い)
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 入力データパス: Phase 2 Evaluationの出力結果 (merged_analysis2_final.csv)
-    # パス: ../../output/phase2_evaluation/merged_analysis2_final.csv
-    input_data_path = os.path.join(base_dir, "..", "..", "output", "phase2_evaluation", "merged_analysis2_final.csv")
+    # 入力データパス: ../../data/processed/final_dataset.csv
+    # ※ 統一ルールに基づき、final_dataset.csv を参照
+    input_data_path = os.path.join(base_dir, "..", "..", "data", "processed", "final_dataset.csv")
     
     # 出力フォルダ: ../../output/figures
     output_figures_dir = os.path.join(base_dir, "..", "..", "output", "figures")
