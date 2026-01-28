@@ -109,7 +109,7 @@ if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     # 入力データパス: ../../data/processed/final_dataset.csv
-    # ※もし前工程の出力 (merged_analysis2_final.csv) を使う場合はパスを適宜変更してください
+    # ※ 統一ルールに基づき、final_dataset.csv を参照
     input_data_path = os.path.join(base_dir, "..", "..", "data", "processed", "final_dataset.csv")
 
     # 出力フォルダ: ../../output/figures
