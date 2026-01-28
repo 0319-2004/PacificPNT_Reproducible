@@ -16,30 +16,10 @@ except ImportError:
     exit(1)
 
 # ==========================================
-# 設定
+# ユーティリティ関数 (GNSS Parser)
+# ※ src/00_utils/gnss_parser.py があればそちらからimport推奨ですが、
+#    単体動作保証のためここにも実装を含めます。
 # ==========================================
-LOG_DIR = 'logs'
-SITE_RISK_FILE = '../sites_risk.csv'  # 親ディレクトリを参照
-DERIVED_DIR = 'derived'
-
-# QC設定
-QC_MIN_EPOCHS = 240
-QC_MIN_DURATION = 240.0
-
-# 投影座標系 (ユーザー指定: EPSG:6677)
-PROJ_EPSG = "epsg:6677" 
-HIGH_ERROR_QUANTILE = 0.70
-
-def setup_directories():
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    run_dir = os.path.join(DERIVED_DIR, 'runs', timestamp)
-    latest_dir = os.path.join(DERIVED_DIR, 'latest')
-    for d in [run_dir, latest_dir]:
-        if os.path.exists(d) and d == latest_dir:
-            shutil.rmtree(d)
-        os.makedirs(os.path.join(d, 'plots'), exist_ok=True)
-    return run_dir, latest_dir
-
 def parse_gnss_log(filepath):
     fix_lines, status_lines = [], []
     fix_header, status_header = None, None
@@ -56,7 +36,8 @@ def parse_gnss_log(filepath):
                 elif line.startswith('Status'):
                     status_lines.append(line.split(','))
                     
-        if not fix_header or not status_header: return None, None, "Missing Header"
+        if not fix_header or not status_header:
+            return None, None, "Missing Header"
             
         df_fix = pd.DataFrame(fix_lines, columns=fix_header)
         df_status = pd.DataFrame(status_lines, columns=status_header)
@@ -67,7 +48,8 @@ def parse_gnss_log(filepath):
             (df_status, ['UnixTimeMillis', 'Cn0DbHz', 'ElevationDegrees', 'AzimuthDegrees', 'UsedInFix'])
         ]:
             for c in cols:
-                if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce')
         
         return df_fix, df_status, "OK"
     except Exception as e:
@@ -78,7 +60,7 @@ def calculate_projected_error(df_fix, transformer):
     valid = df_fix.dropna(subset=['LatitudeDegrees', 'LongitudeDegrees'])
     if valid.empty: return np.nan, np.nan
     
-    # 修正箇所: always_xy=True なので (Longitude, Latitude) の順で渡す
+    # pyproj.Transformer (always_xy=True) -> lon, lat
     xx, yy = transformer.transform(valid['LongitudeDegrees'].values, valid['LatitudeDegrees'].values)
     
     med_x, med_y = np.median(xx), np.median(yy)
@@ -88,21 +70,49 @@ def calculate_projected_error(df_fix, transformer):
 def calculate_hdop_from_geometry(az, el):
     if len(az) < 4: return np.nan
     az_rad, el_rad = np.radians(az), np.radians(el)
-    G = np.column_stack([-np.cos(el_rad)*np.sin(az_rad), -np.cos(el_rad)*np.cos(az_rad), -np.sin(el_rad), np.ones_like(az_rad)])
+    # G matrix for HDOP
+    G = np.column_stack([
+        -np.cos(el_rad)*np.sin(az_rad), 
+        -np.cos(el_rad)*np.cos(az_rad), 
+        -np.sin(el_rad), 
+        np.ones_like(az_rad)
+    ])
     try:
         Q = np.linalg.inv(G.T @ G)
         return np.sqrt(Q[0, 0] + Q[1, 1])
-    except: return np.nan
+    except:
+        return np.nan
 
-def main():
-    print("--- Pipeline Started ---")
-    run_dir, latest_dir = setup_directories()
+
+# ==========================================
+# メイン解析ロジック
+# ==========================================
+def run_baseline_analysis(
+    log_dir, 
+    site_risk_file, 
+    output_dir, 
+    qc_min_epochs=240, 
+    qc_min_duration=240.0,
+    proj_epsg="epsg:6677",
+    high_error_quantile=0.70
+):
+    print("--- Baseline Pipeline Started ---")
     
-    # 座標変換設定 (x=lon, y=lat)
-    transformer = pyproj.Transformer.from_crs("epsg:4326", PROJ_EPSG, always_xy=True)
+    # 出力ディレクトリ準備
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir = os.path.join(output_dir, 'runs', timestamp)
+    latest_dir = os.path.join(output_dir, 'latest')
+    
+    if os.path.exists(latest_dir):
+        shutil.rmtree(latest_dir)
+    os.makedirs(os.path.join(run_dir, 'plots'), exist_ok=True)
+    os.makedirs(os.path.join(latest_dir, 'plots'), exist_ok=True) # latest側も作成
 
-    log_files = glob.glob(os.path.join(LOG_DIR, '*.txt'))
-    print(f"Found {len(log_files)} logs in {LOG_DIR}")
+    # 座標変換設定 (x=lon, y=lat)
+    transformer = pyproj.Transformer.from_crs("epsg:4326", proj_epsg, always_xy=True)
+
+    log_files = glob.glob(os.path.join(log_dir, '*.txt'))
+    print(f"Found {len(log_files)} logs in {log_dir}")
     
     qc_fails, site_metrics = [], []
     
@@ -118,10 +128,11 @@ def main():
         duration = (t_max - t_min) / 1000.0 if pd.notnull(t_min) else 0
         n_fix = len(df_fix)
         
-        if n_fix < QC_MIN_EPOCHS:
+        # QC Check
+        if n_fix < qc_min_epochs:
             qc_fails.append({'site_id': site_id, 'reason': f"Low Epochs ({n_fix})"})
             continue
-        if duration < QC_MIN_DURATION:
+        if duration < qc_min_duration:
             qc_fails.append({'site_id': site_id, 'reason': f"Short Duration ({duration:.1f}s)"})
             continue
             
@@ -159,7 +170,8 @@ def main():
         })
         print(f"Processed {site_id}: err95={err_p95:.2f}m")
 
-    if qc_fails: pd.DataFrame(qc_fails).to_csv(os.path.join(run_dir, 'qc_fails.csv'), index=False)
+    if qc_fails:
+        pd.DataFrame(qc_fails).to_csv(os.path.join(run_dir, 'qc_fails.csv'), index=False)
     
     if not site_metrics:
         print("No sites passed QC.")
@@ -168,19 +180,24 @@ def main():
     df_metrics = pd.DataFrame(site_metrics)
     df_metrics.to_csv(os.path.join(run_dir, 'site_metrics_raw.csv'), index=False)
     
-    if not os.path.exists(SITE_RISK_FILE):
-        print(f"Warning: {SITE_RISK_FILE} not found. Skipped merge.")
+    # Merge with Site Risk (External Data)
+    if not os.path.exists(site_risk_file):
+        print(f"Warning: {site_risk_file} not found. Skipped merge and plot.")
         return
         
-    df_risk = pd.read_csv(SITE_RISK_FILE)
+    df_risk = pd.read_csv(site_risk_file)
     df_risk['site_id'] = df_risk['site_id'].astype(str).str.strip()
     df_merged = pd.merge(df_metrics, df_risk, on='site_id', how='inner')
     print(f"Merged: {len(df_merged)} sites")
-    df_merged.to_csv(os.path.join(run_dir, 'merged.csv'), index=False)
     
-    thr = df_merged['err_p95_m'].quantile(HIGH_ERROR_QUANTILE)
+    # 【修正】出力ファイル名を統一ルール 'final_dataset.csv' に変更
+    output_csv_name = 'final_dataset.csv'
+    df_merged.to_csv(os.path.join(run_dir, output_csv_name), index=False)
+    
+    # High Error Classification & ROC
+    thr = df_merged['err_p95_m'].quantile(high_error_quantile)
     df_merged['high_error'] = (df_merged['err_p95_m'] >= thr).astype(int)
-    print(f"High Error Threshold: {thr:.2f}m")
+    print(f"High Error Threshold (top {100*(1-high_error_quantile):.0f}%): {thr:.2f}m")
     
     features = [f for f in ['risk_proxy_5m', 'svf_proxy_5m', 'risk_cut5', 'hdop_cut_a_median', 'hdop_cut_b_median'] if f in df_merged.columns]
     
@@ -198,7 +215,7 @@ def main():
     plt.savefig(os.path.join(run_dir, 'plots', 'roc_curves.png'))
     with open(os.path.join(run_dir, 'roc_auc.txt'), 'w') as f: f.write('\n'.join(auc_results))
     
-    # 簡易散布図
+    # Scatter Plots
     if features:
         plt.figure(figsize=(15, 5))
         for i, f in enumerate(features[:3]):
@@ -208,12 +225,41 @@ def main():
         plt.tight_layout()
         plt.savefig(os.path.join(run_dir, 'plots', 'scatter_risk_err.png'))
 
-    # Copy to latest
+    # Copy results to 'latest'
     for f in glob.glob(os.path.join(run_dir, '*')):
-        if os.path.isfile(f): shutil.copy(f, latest_dir)
-    if os.path.exists(os.path.join(latest_dir, 'plots')): shutil.rmtree(os.path.join(latest_dir, 'plots'))
-    shutil.copytree(os.path.join(run_dir, 'plots'), os.path.join(latest_dir, 'plots'))
+        if os.path.isfile(f):
+            shutil.copy(f, latest_dir)
+            
+    # shutil.copytree for plots needs destination to NOT exist, so we handle files inside
+    for plot_file in glob.glob(os.path.join(run_dir, 'plots', '*')):
+        shutil.copy(plot_file, os.path.join(latest_dir, 'plots'))
+
     print(f"\nCompleted. Results in: {latest_dir}")
 
+
 if __name__ == "__main__":
-    main()
+    # ファイル配置場所: src/01_baseline_phase1/ (Rootから2階層深い)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # パス設定
+    # ログ入力: ../../data/processed/gnss_normalized (前工程で整形されたログを想定)
+    # ※もし生ログを使うなら ../../data/raw/gnss_logs などに変更してください
+    log_input_dir = os.path.join(base_dir, "..", "..", "data", "processed", "gnss_normalized")
+    
+    # リスク定義ファイル: ../../data/processed/sites_risk.csv (QGIS等で作成されたファイル)
+    # ※ site_definitions.csv (raw) ではなく、中間リスクファイルを使うため維持
+    site_risk_csv = os.path.join(base_dir, "..", "..", "data", "processed", "sites_risk.csv")
+    
+    # 出力先: ../../output/baseline_analysis
+    output_base_dir = os.path.join(base_dir, "..", "..", "output", "baseline_analysis")
+    
+    # 実行
+    run_baseline_analysis(
+        log_dir=log_input_dir,
+        site_risk_file=site_risk_csv,
+        output_dir=output_base_dir,
+        qc_min_epochs=240,
+        qc_min_duration=240.0,
+        proj_epsg="epsg:6677",
+        high_error_quantile=0.70
+    )

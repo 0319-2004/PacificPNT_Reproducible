@@ -1,45 +1,41 @@
 import os
-import glob
 import pandas as pd
 import numpy as np
 from sklearn.metrics import roc_auc_score
 import warnings
+
+# 警告抑制
 warnings.filterwarnings("ignore")
 
 # ==========================================
-# 設定
+# 定数・設定
 # ==========================================
-LOG_DIR = 'logs'
-SITE_RISK_FILE = 'week3_analysis2/sites_risk.csv'
-DOP_RESULT_FILE = 'week3_dop_results.csv'
-DERIVED_DIR = 'week3_analysis2/derived'
+HIGH_ERROR_QUANTILE = 0.70  # 上位30%を高誤差（危険）とする
+FOCUS_SITES = ["A11", "A06"] # 特定の注目サイト（A11:高架下, A06:最大誤差）
 
-# Safety Metrics用設定
-HIGH_ERROR_QUANTILE = 0.70 # 上位30%を高誤差とする
-FOCUS_SITES = ["A11", "A06"] # A11(高架下), A06(最大誤差)
-
-def parse_gnss_log(filepath):
-    # (簡易版) ログからAccuracyだけ抜く
-    try:
-        df = pd.read_csv(filepath, comment='#', names=['UnixTimeMillis','LatitudeDegrees','LongitudeDegrees','AccuracyMeters'], usecols=[0,1,2,3])
-        if df.empty: return None
-        # 簡易的な誤差計算（実際は投影変換が必要だが、ここではmerge用のn_fix数カウント等に使用）
-        return df
-    except:
-        return None
-
-def calculate_safety_metrics(df, y_col, score_col, model_name):
-    """AUCとSafety Metrics (Rank) を計算"""
-    temp = df[[y_col, score_col, 'site_id', 'err_p95_m']].dropna()
+# ==========================================
+# ヘルパー関数
+# ==========================================
+def calculate_safety_metrics(df, y_col, score_col, model_name, focus_sites=FOCUS_SITES):
+    """
+    指定されたスコアについてAUCとSafety Metrics (Rank) を計算する。
+    AUC < 0.5 の場合はスコアの正負を反転して評価する。
+    """
+    # 必要なカラムのみ抽出して欠損除去
+    cols = [y_col, score_col, 'site_id', 'err_p95_m']
+    temp = df[cols].dropna()
+    
     y = temp[y_col].values
     s = temp[score_col].values
     
-    if len(np.unique(y)) < 2: return None
+    # クラスが1つしかない場合は計算不可
+    if len(np.unique(y)) < 2:
+        return None
 
     # AUC計算
     auc_raw = roc_auc_score(y, s)
     
-    # ランキング用にスコアの向きを揃える (AUC<0.5なら反転)
+    # ランキング用にスコアの向きを揃える (AUC < 0.5 ならスコアが高いほど安全という意味なので反転)
     flipped = False
     if auc_raw < 0.5:
         s_used = -s
@@ -49,74 +45,91 @@ def calculate_safety_metrics(df, y_col, score_col, model_name):
         s_used = s
         auc_used = auc_raw
 
-    # ランク付け (高いほど危険)
+    # ランク付け (スコアが高いほど危険 = 高ランク)
+    temp = temp.copy()
     temp['_score_used'] = s_used
     temp_sorted = temp.sort_values('_score_used', ascending=False).reset_index(drop=True)
     
     res = {
         "Model": model_name,
         "Score": score_col,
-        "AUC": auc_used, # 反転後
+        "AUC": auc_used, # 反転後 (0.5以上)
         "Flipped": flipped
     }
     
-    # 特定サイトの順位
-    for site in FOCUS_SITES:
+    # 特定サイトの順位を取得
+    for site in focus_sites:
         try:
-            rank = temp_sorted[temp_sorted['site_id'] == site].index[0] + 1
+            # 1-based index
+            rank = temp_sorted[temp_sorted['site_id'] == str(site)].index[0] + 1
             res[f"Rank({site})"] = rank
-        except:
+        except IndexError:
             res[f"Rank({site})"] = "-"
             
     return res
 
-def main():
+# ==========================================
+# メイン処理関数
+# ==========================================
+def run_phase2_evaluation(risk_csv_path, baseline_metrics_path, dop_csv_path, output_dir, final_dataset_path):
     print("--- Phase 2: Analysis Pipeline (Safety Metrics) ---")
     
-    # 1. ログ読み込み & 誤差データ作成 (merged.csv相当を作る)
-    # ※今回は簡易的に既存の merged.csv があればそれを使う、なければ作る
-    # ここでは「merged_analysis2.csv」を新規作成するフロー
+    # 出力ディレクトリ作成
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
     
-    # まずログからサイトID抽出 (本来は全ログ処理だが、簡略化のためRiskファイルベースで結合)
-    df_risk = pd.read_csv(SITE_RISK_FILE)
-    
-    # 誤差データ（既存の merged.csv または site_metrics_raw.csv があると仮定）
-    # なければ week3_analysis/derived/latest/merged.csv を探す
-    metrics_path = 'week3_analysis/derived/latest/merged.csv'
-    if not os.path.exists(metrics_path):
-        # ルートにある場合
-        metrics_path = 'merged.csv'
-    
-    if os.path.exists(metrics_path):
-        print(f"Loading metrics from: {metrics_path}")
-        df_metrics = pd.read_csv(metrics_path)
-    else:
-        print("Error: merged.csv (Phase 1 result) not found. Run Phase 1 first.")
-        return
+    # final_dataset.csv の保存先ディレクトリ作成
+    final_data_dir = os.path.dirname(final_dataset_path)
+    if not os.path.exists(final_data_dir):
+        os.makedirs(final_data_dir, exist_ok=True)
 
-    # HDOPデータ結合
-    if os.path.exists(DOP_RESULT_FILE):
-        df_dop = pd.read_csv(DOP_RESULT_FILE)
+    # 1. ファイル読み込み
+    # Phase 2 Risk (今回計算した指標)
+    if not os.path.exists(risk_csv_path):
+        raise FileNotFoundError(f"Risk metrics file not found: {risk_csv_path}")
+    df_risk = pd.read_csv(risk_csv_path)
+    # サイトIDを文字列型に統一
+    df_risk['site_id'] = df_risk['site_id'].astype(str)
+
+    # Phase 1 Metrics (誤差正解データ: err_p95_m)
+    if not os.path.exists(baseline_metrics_path):
+        raise FileNotFoundError(f"Baseline metrics file not found: {baseline_metrics_path}\nRun Phase 1 analysis first.")
+    df_metrics = pd.read_csv(baseline_metrics_path)
+    df_metrics['site_id'] = df_metrics['site_id'].astype(str)
+    
+    print(f"Loaded Risk Data: {len(df_risk)} sites")
+    print(f"Loaded Baseline Data: {len(df_metrics)} sites")
+
+    # 2. データの結合
+    # DOPデータ (HDOP Benchmark用) は任意
+    if os.path.exists(dop_csv_path):
+        df_dop = pd.read_csv(dop_csv_path)
+        df_dop['site_id'] = df_dop['site_id'].astype(str)
+        # 必要なカラムだけ結合
         df_metrics = pd.merge(df_metrics, df_dop[['site_id', 'hdop_cut_a_median']], on='site_id', how='left')
+        print("Merged DOP data.")
+    else:
+        print(f"Warning: DOP file not found ({dop_csv_path}). Skipping HDOP benchmark.")
 
-    # 今回のリスクデータと結合
-    # カラム重複を防ぐ
+    # Riskデータと結合 (Phase 1の結果をベースに Phase 2のスコアを付与)
+    # カラム重複を防ぐため、df_riskからはmetricsに含まれていないカラムのみ採用
     cols_to_use = [c for c in df_risk.columns if c not in df_metrics.columns or c == 'site_id']
     df_merged = pd.merge(df_metrics, df_risk[cols_to_use], on='site_id', how='inner')
     
-    # 保存
-    os.makedirs(DERIVED_DIR, exist_ok=True)
-    df_merged.to_csv(os.path.join(DERIVED_DIR, 'merged_analysis2_final.csv'), index=False)
+    print(f"Merged Data: {len(df_merged)} sites")
+    
+    # 【修正】最終データセットを data/processed/final_dataset.csv として保存
+    df_merged.to_csv(final_dataset_path, index=False)
+    print(f"Saved final dataset to: {final_dataset_path}")
 
-    # 2. 評価実行
-    # Ground Truth定義
+    # 3. 評価実行 (High Error Ground Truthの定義)
     thr = df_merged['err_p95_m'].quantile(HIGH_ERROR_QUANTILE)
     df_merged['high_error'] = (df_merged['err_p95_m'] >= thr).astype(int)
     
-    print(f"High Error Threshold: {thr:.2f}m")
+    print(f"High Error Threshold (top {100*(1-HIGH_ERROR_QUANTILE):.0f}%): {thr:.2f}m")
     
     results = []
-    # 評価する指標リスト
+    # 評価対象の指標リスト
     targets = [
         ('risk_proxy_5m', 'Phase2 (Combined)'),
         ('risk_horizon',  'Phase2 (Horizon)'),
@@ -127,17 +140,64 @@ def main():
     for col, name in targets:
         if col in df_merged.columns:
             res = calculate_safety_metrics(df_merged, 'high_error', col, name)
-            if res: results.append(res)
+            if res:
+                results.append(res)
+        else:
+            print(f"Skipping {name}: Column '{col}' not found.")
             
-    # 結果表示
+    # 4. 結果表示と保存
+    if not results:
+        print("No results calculated.")
+        return
+
     res_df = pd.DataFrame(results)
-    print("\n=== Final Results for Paper ===")
-    print(res_df.to_markdown(index=False))
     
-    # ファイル保存
-    with open(os.path.join(DERIVED_DIR, 'final_results.txt'), 'w') as f:
-        f.write(res_df.to_markdown(index=False))
-    print(f"\nResults saved to {DERIVED_DIR}/final_results.txt")
+    # コンソール表示
+    print("\n=== Final Results for Paper ===")
+    try:
+        print(res_df.to_string(index=False))
+    except:
+        print(res_df)
+    
+    # テキストファイル保存
+    result_txt_path = os.path.join(output_dir, 'final_results.txt')
+    with open(result_txt_path, 'w', encoding='utf-8') as f:
+        f.write(res_df.to_string(index=False))
+        
+    print(f"\nResults saved to {result_txt_path}")
+
 
 if __name__ == "__main__":
-    main()
+    # ファイル配置場所: src/02_proposed_phase2/ (Rootから2階層深い)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # パス設定: ../../output 配下の各工程の結果を参照
+    
+    # 1. Phase 2 Risk Result (calc_phase2_risk.py の出力)
+    input_risk_csv = os.path.join(base_dir, "..", "..", "output", "phase2_risk", "sites_risk.csv")
+    
+    # 2. Phase 1 Baseline Metrics (run_baseline.py の出力: merged.csv -> final_dataset.csv)
+    # ※ ルールに基づき、前工程の出力名も final_dataset.csv に変更されている前提で読み込む
+    input_baseline_csv = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "latest", "final_dataset.csv")
+    
+    # 3. DOP Benchmark (week3_dop_sim.py の出力)
+    input_dop_csv = os.path.join(base_dir, "..", "..", "output", "baseline_analysis", "week3_dop_results.csv")
+    
+    # 出力先: ../../output/phase2_evaluation
+    output_eval_dir = os.path.join(base_dir, "..", "..", "output", "phase2_evaluation")
+    
+    # 【重要】最終データセット保存先: data/processed/final_dataset.csv
+    final_dataset_dest = os.path.join(base_dir, "..", "..", "data", "processed", "final_dataset.csv")
+    
+    # 実行
+    try:
+        run_phase2_evaluation(
+            risk_csv_path=input_risk_csv,
+            baseline_metrics_path=input_baseline_csv,
+            dop_csv_path=input_dop_csv,
+            output_dir=output_eval_dir,
+            final_dataset_path=final_dataset_dest
+        )
+    except Exception as e:
+        print(f"Error during evaluation: {e}")
+        print("Ensure that Phase 1 (baseline) and Phase 2 (risk calculation) have been executed successfully.")
