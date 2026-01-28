@@ -169,9 +169,9 @@ if __name__ == "__main__":
     processed_dir = os.path.join(base_dir, "..", "..", "data", "processed")
     raw_dir = os.path.join(base_dir, "..", "..", "data", "raw")
     
-    # 入力ファイルパス
-    in_bldg = os.path.join(processed_dir, "bldg_aoi.gpkg")
-    in_brid = os.path.join(processed_dir, "brid_aoi.gpkg")
+    # 入力ファイルパス【修正: 01_vector_to_raster.py の出力ファイル名に合わせる】
+    in_bldg = os.path.join(processed_dir, "bld_clip.gpkg")   # 元: bldg_aoi.gpkg
+    in_brid = os.path.join(processed_dir, "brid_clip.gpkg")  # 元: brid_aoi.gpkg
     
     # サイト定義データの統一: site_centers.csv -> site_definitions.csv (raw)
     in_sites = os.path.join(raw_dir, "site_definitions.csv")
