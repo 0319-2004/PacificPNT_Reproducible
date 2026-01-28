@@ -1,10 +1,17 @@
-exec(r"""
 import os
 import processing
 from qgis.core import QgsProject, QgsRasterLayer
 
 print("=========== SKYVIEW PROXY VIA NEIGHBOR MAX START ===========")
 
+# ---- 0. パス設定 (相対パス化) ----
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.join(SCRIPT_DIR, "data", "processed")
+
+# 出力先フォルダの自動生成
+if not os.path.exists(BASE_DIR):
+    os.makedirs(BASE_DIR)
+    print(f"[*] ディレクトリを作成しました: {BASE_DIR}")
 
 # --------- 1. 入力ラスタ（bld_height_5m）を取得 ---------
 HEIGHT_LAYER_NAME = "bld_height_5m"   # レイヤ名
@@ -15,8 +22,8 @@ if not layers:
     raise FileNotFoundError(f"レイヤ '{HEIGHT_LAYER_NAME}' が見つかりません。")
 
 height_layer = layers[0]
-height_path  = height_layer.dataProvider().dataSourceUri().split('|')[0]
-base_dir     = os.path.dirname(height_path)
+# 入力ファイルパス（QGIS上のレイヤから取得するが、出力はBASE_DIRに固定）
+height_path = height_layer.dataProvider().dataSourceUri().split('|')[0]
 
 print(f"▶ 使用建物高さラスタ: {height_path}")
 print(f"▶ CRS: {height_layer.crs().authid()}")
@@ -33,7 +40,7 @@ kernel_size = kernel_half * 2 + 1   # 奇数に
 
 print(f"▶ 近傍半径 ~{RADIUS_M:.1f} m → カーネルサイズ = {kernel_size} セル")
 
-localmax_path = os.path.join(base_dir, "bld_height_5m_localmax.tif")
+localmax_path = os.path.join(BASE_DIR, "bld_height_5m_localmax.tif")
 
 print("[*] GRASS r.neighbors で局所最大高さを計算中...")
 params_neighbors = {
@@ -68,8 +75,8 @@ print(f"▶ H_global_max (局所最大高さの最大値) = {H_global_max:.3f} m
 
 
 # --------- 4. risk_proxy, svf_proxy を 0〜1 で作成 ---------
-risk_path = os.path.join(base_dir, "risk_proxy_5m.tif")
-svf_path  = os.path.join(base_dir, "svf_proxy_5m.tif")
+risk_path = os.path.join(BASE_DIR, "risk_proxy_5m.tif")
+svf_path  = os.path.join(BASE_DIR, "svf_proxy_5m.tif")
 
 print("[*] GDAL Raster Calculator で risk_proxy = H_local_max / H_global_max を計算中...")
 expr_risk = f"A/{H_global_max}"
@@ -121,4 +128,3 @@ for lyr in (risk_layer, svf_layer):
         print(f"⚠ レイヤの読み込みに失敗: {lyr.name()}")
 
 print("=========== SKYVIEW PROXY VIA NEIGHBOR MAX DONE ===========")
-""")
