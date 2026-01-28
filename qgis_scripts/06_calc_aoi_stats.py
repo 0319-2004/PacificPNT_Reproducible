@@ -1,35 +1,57 @@
 import os
 
-print("=========== AREA SUMMARY START ===========")
+def calculate_area_statistics(output_dir, counts, pixel_size=5):
+    """
+    指定されたピクセル数(counts)と解像度(pixel_size)に基づいて
+    面積と構成比率を計算し、コンソールに出力する。
+    """
+    print("=========== AREA SUMMARY START ===========")
 
-# ---- 0. パス設定 (相対パス化) ----
-# このスクリプトではファイル出力はありませんが、
-# プロジェクト全体の方針に合わせてパス定義を追加しておきます。
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-BASE_DIR = os.path.join(SCRIPT_DIR, "data", "processed")
+    # 出力先フォルダの自動生成（このスクリプトではファイル出力はないが、統一ルールとして維持）
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"[*] ディレクトリを作成しました: {output_dir}")
 
-# 出力先フォルダの自動生成（念のため）
-if not os.path.exists(BASE_DIR):
-    os.makedirs(BASE_DIR)
+    area_per_pix = pixel_size * pixel_size  # m^2
+    total = sum(counts.values())
 
-# 5m解像度の class raster の面積サマリ（counts→m²→割合）
-# ※countsは直前の解析結果に基づいて入力してください
-counts = {1: 2888, 2: 3850, 3: 2888}
-pix = 5
-area_per_pix = pix * pix  # 25 m^2
+    print(f"▶ 基準ディレクトリ: {output_dir}")
+    print("pixel_size(m):", pixel_size)
+    print("valid_pixels:", total)
+    print("valid_area_m2:", total * area_per_pix)
 
-total = sum(counts.values())
+    labels = {1: "open", 2: "street", 3: "alley"}
+    
+    print("\n--- Classification Result ---")
+    for k in sorted(counts):
+        # ラベルが存在しない場合のフォールバック（念のため）
+        label = labels.get(k, f"class_{k}")
+        
+        a = counts[k] * area_per_pix
+        if total > 0:
+            p = counts[k] / total * 100
+        else:
+            p = 0.0
+            
+        print(f"{k} {label}: pixels={counts[k]} area_m2={a} share={p:.2f}%")
 
-print(f"▶ 基準ディレクトリ: {BASE_DIR}")
-print("pixel_size(m):", pix)
-print("valid_pixels:", total)
-print("valid_area_m2:", total * area_per_pix)
+    print("=========== AREA SUMMARY DONE ===========")
 
-labels = {1: "open", 2: "street", 3: "alley"}
-print("\n--- Classification Result ---")
-for k in sorted(counts):
-    a = counts[k] * area_per_pix
-    p = counts[k] / total * 100
-    print(f"{k} {labels[k]}: pixels={counts[k]} area_m2={a} share={p:.2f}%")
 
-print("=========== AREA SUMMARY DONE ===========")
+if __name__ == "__main__":
+    # ファイル配置場所: qgis_scripts/ (Rootから1階層深い)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # data/processed へのパス (../data/processed)
+    processed_dir = os.path.join(base_dir, "..", "data", "processed")
+    
+    # 解析対象のピクセル数（直前の解析結果などをここに定義）
+    # 5m解像度の class raster の面積サマリ
+    input_counts = {1: 2888, 2: 3850, 3: 2888}
+    
+    # 関数実行
+    calculate_area_statistics(
+        output_dir=processed_dir,
+        counts=input_counts,
+        pixel_size=5
+    )
