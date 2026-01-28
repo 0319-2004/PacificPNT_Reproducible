@@ -1,17 +1,27 @@
-exec(r"""
+import os
+import time
 from qgis.core import (
     QgsProject, QgsVectorLayer, QgsField,
     QgsVectorFileWriter
 )
 from qgis.PyQt.QtCore import QVariant
-import os, time
+
+print("=========== PNT SITES LAYER GENERATION START ===========")
+
+# ---- 0. パス設定 (相対パス化) ----
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# データを保存するディレクトリ (data/processed)
+BASE_DIR = os.path.join(SCRIPT_DIR, "data", "processed")
+
+# 出力先フォルダの自動生成
+if not os.path.exists(BASE_DIR):
+    os.makedirs(BASE_DIR)
+    print(f"[*] ディレクトリを作成しました: {BASE_DIR}")
 
 LAYER_NAME = "PNT_sites_raw"
 CRS_AUTHID = "EPSG:6677"
+gpkg_path = os.path.join(BASE_DIR, "pnt_sites.gpkg")
 
-# macでDesktop権限で詰まりやすいのでDocuments推奨
-out_dir = os.path.join(os.path.expanduser("~"), "Documents")
-gpkg_path = os.path.join(out_dir, "pnt_sites.gpkg")
 print(f"[INFO] output gpkg: {gpkg_path}")
 
 proj = QgsProject.instance()
@@ -29,7 +39,8 @@ for lyr in proj.mapLayers().values():
 for lid in to_remove:
     proj.removeMapLayer(lid)
 
-print(f"[OK] removed {len(to_remove)} layer(s) that referenced the gpkg (if any)")
+if to_remove:
+    print(f"[OK] removed {len(to_remove)} layer(s) that referenced the gpkg")
 
 # 2) 既存gpkgを削除（更新モードで開けない問題を回避）
 if os.path.exists(gpkg_path):
@@ -37,9 +48,9 @@ if os.path.exists(gpkg_path):
         os.remove(gpkg_path)
         print("[OK] deleted existing gpkg")
     except Exception as e:
-        # 削除できないならファイル名を変えて作る
+        # 削除できないならタイムスタンプを付与して回避
         ts = time.strftime("%Y%m%d_%H%M%S")
-        gpkg_path = os.path.join(out_dir, f"pnt_sites_{ts}.gpkg")
+        gpkg_path = os.path.join(BASE_DIR, f"pnt_sites_{ts}.gpkg")
         print("[WARN] could not delete existing gpkg -> write to:", gpkg_path)
 
 # 3) 空のメモリ点レイヤを作成
@@ -86,4 +97,5 @@ if not gpkg_layer.isValid():
 
 proj.addMapLayer(gpkg_layer)
 print("[✓] Added layer to project:", gpkg_layer.name())
-""")
+
+print("=========== PNT SITES LAYER GENERATION DONE ===========")
